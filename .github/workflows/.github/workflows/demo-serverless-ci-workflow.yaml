@@ -1,0 +1,89 @@
+name: demo-serverless-ci-workflow
+
+on: 
+  workflow_call: # para correr el workflow cuando sea invocado
+    outputs:
+      artifact_base_name: 
+        value: ${{ jobs.continuos_integration_job.outputs.artifact_base_name }}
+        description: The version generated in this build  
+    inputs: # entradas que recibe este workflow
+      node_version:
+        type: string
+        description: 'Node version to use'     
+        required: true
+      infraestructure_target: # defino si voy a usar AWS o Azure, en este caso
+        type: string
+        description: 'Infraestructure target for ci'     
+        required: true
+
+jobs:
+  continuos_integration_job: # recomendado usar _ para los nombres
+    runs-on: ubuntu-latest 
+    permissions: # con esta sección limitamos que el workflow solo pueda ser leído, por seguridad
+      contents: read
+    defaults: 
+      run:
+        working-directory: ${{ inputs.infraestructure_target == 'Lambda' && 'Lambda' || 'AzureFunction' }} # defino un condicional dependiendo de la infra seleccionada
+    outputs:
+      artifact_base_name: ${{ steps.name_artifact.outputs.artifact_base_name }}
+      
+    steps:
+    - name: 'Checkout Source Code' # traigo el código al runner
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+
+    - name: Setup Node ${{ inputs.node_version }} Environment # instalo la version de nove definida
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ inputs.node_version }}
+
+    - name: 'npm install' # instalo npm
+      shell: bash
+      run: |
+        npm install
+
+    - name: 'npm build' # compilo npm
+      shell: bash 
+      run: |
+        echo 'npm run build:prod'
+    
+    - name: 'npm test' # pruebas de npm al código
+      shell: bash 
+      run: |
+        npm test
+
+    - name: Name Artifact Definition # nombro el artefacto con un nombre único, 
+      id: name_artifact
+      run: echo "artifact_base_name=artifact-${{ github.run_id }}" >> $GITHUB_OUTPUT # github.run_id es un serial único definido en github para cada run
+
+    - name: Zip artifact for deployment in Lambda # comprimir el artefacto de este flow en .zip para lambda
+      if: inputs.infraestructure_target == 'Lambda' # condicional, solo aplica si la infra es lambda
+      run: zip -j ${{ steps.name_artifact.outputs.artifact_base_name }}.zip ./HelloGitTogetherLambda/index.js
+
+    - name: Zip artifact for deployment in Azure Function # comprimir el artefacto de este flow en .zip para Functions
+      if: inputs.infraestructure_target == 'AzureFunction' # condicional, solo aplica si la infra es Azure
+      run: zip -r ${{ steps.name_artifact.outputs.artifact_base_name }}.zip * -x 'node_modules/*'
+
+    - name: 'npm test' # prueba para listar el .zip
+      shell: bash 
+      run: |
+        pwd
+        echo "LS:"
+        ls
+      
+    - name: Upload artifact for deployment job in Lambda # cargo a lambda el .zip (condicionado a la variable de entrada)
+      if: inputs.infraestructure_target == 'Lambda'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.name_artifact.outputs.artifact_base_name }}-ci
+        path: Lambda/${{ steps.name_artifact.outputs.artifact_base_name }}.zip
+        retention-days: 5
+
+    - name: Upload artifact for deployment job in Azure Function cargo a Fucntion el .zip (condicionado a la variable de entrada)
+      if: inputs.infraestructure_target == 'AzureFunction'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.name_artifact.outputs.artifact_base_name }}-ci
+        path: AzureFunction/${{ steps.name_artifact.outputs.artifact_base_name }}.zip
+        retention-days: 5

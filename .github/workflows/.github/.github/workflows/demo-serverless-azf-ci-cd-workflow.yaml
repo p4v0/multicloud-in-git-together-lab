@@ -1,0 +1,64 @@
+name: demo-serverless-azf-ci-cd-workflow
+
+run-name: "${{ github.actor }}-${{ github.run_id }}-${{ github.event_name }}-${{ inputs.environment || 'sandbox' }}-ci-cd-azf"
+
+concurrency: 
+  group: default 
+
+on:
+  push: # trigger para ejecutar el flow cuando se haga push a main
+    branches:
+      - main
+  pull_request: # o cuando se haga PR a main
+    branches:
+      - main
+  workflow_dispatch: # o para ejecutar manual desde la GUI de GitHub
+    inputs: 
+      environment: # entrada para definir si se ejecuta en ambiente sandbox y dllo, por default sandbox
+        description: Environment to deploy
+        type: choice
+        options:
+          - 'sandbox'
+          - 'development'
+        required: true
+        default: 'sandbox'
+
+jobs:
+  continuos_integration_job: # llamo al worflow de CI:
+    uses: ./.github/workflows/demo-serverless-ci-workflow.yaml
+    with:
+      infraestructure_target: 'AzureFunction' # le envío los parametros de entrada defino la infra y version de node
+      node_version: ${{ inputs.infraestructure == 'Lambda' && '14.x' || '18.x' }} #FIX For educational use only
+    secrets: inherit
+
+  continuos-deployment-job:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    needs: continuos_integration_job # para correr este workflow necesito correr el de CI primero
+    environment: ${{ inputs.environment || 'sandbox' }} # y el environment
+    steps:
+    - name: Download artifact from build job # traigo el artefacto (.zip) del de CI
+      uses: actions/download-artifact@v4
+      with:
+       name: ${{ needs.continuos_integration_job.outputs.artifact_base_name }}-ci
+
+    - name: 'Login via Azure CLI' # login a Azure con el secreto de Azure guardado en actions/secrets
+      uses: azure/login@v1
+      with: 
+        creds: ${{ secrets.AZURE_RBAC_CREDENTIALS }}
+      
+    - name: unzip artifact for deployment 
+      run: unzip ${{ needs.continuos_integration_job.outputs.artifact_base_name }}.zip -d workspace
+
+    - name: unzip output
+      run: ls -ls workspace
+
+    - name: "Deploy stage"
+      run: echo "Deploy started!"
+    
+    - name: 'Run Azure Functions action'
+      uses: Azure/functions-action@v1
+      with:
+        app-name: ${{ vars.AZF_NAME }}
+        package: ./workspace
